@@ -51,6 +51,38 @@ defmodule Jump.CredoChecks.UnusedLiveViewAssignTest do
     |> refute_issues()
   end
 
+  @tag :tmp_dir
+  test "accepts assigns read from an embedded HEEx template", %{tmp_dir: tmp_dir} do
+    source_dir = Path.join(tmp_dir, "views")
+    template_dir = Path.join(tmp_dir, "templates")
+    File.mkdir_p!(source_dir)
+    File.mkdir_p!(template_dir)
+
+    source_filename = Path.join(source_dir, "sample_live.ex")
+    template_filename = Path.join(template_dir, "show.html.heex")
+
+    File.write!(template_filename, """
+    {@name}
+    """)
+
+    """
+    defmodule SampleLive do
+      use SampleWeb, :live_view
+
+      embed_templates "../templates/*"
+
+      def mount(_params, _session, socket) do
+        socket
+        |> assign(:name, "Ada")
+        |> ok()
+      end
+    end
+    """
+    |> to_source_file(source_filename)
+    |> run_check(UnusedLiveViewAssign)
+    |> refute_issues()
+  end
+
   test "accepts assigns read from Elixir" do
     """
     defmodule SampleLive do

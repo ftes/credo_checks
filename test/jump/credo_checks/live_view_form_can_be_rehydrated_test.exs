@@ -1,6 +1,8 @@
 defmodule Jump.CredoChecks.LiveViewFormCanBeRehydratedTest do
   use Credo.Test.Case, async: true
 
+  alias Credo.Check.ConfigCommentFinder
+  alias Credo.CLI.Filter
   alias Jump.CredoChecks.LiveViewFormCanBeRehydrated
 
   test "reports issue for raw HTML form without id" do
@@ -381,5 +383,59 @@ defmodule Jump.CredoChecks.LiveViewFormCanBeRehydratedTest do
     |> to_source_file()
     |> run_check(LiveViewFormCanBeRehydrated)
     |> assert_issue()
+  end
+
+  @tag :tmp_dir
+  test "does not let source-file disables hide embedded HEEx file issues", %{tmp_dir: tmp_dir} do
+    source_dir = Path.join(tmp_dir, "views")
+    template_dir = Path.join(tmp_dir, "templates")
+    File.mkdir_p!(source_dir)
+    File.mkdir_p!(template_dir)
+
+    source_path = Path.join(source_dir, "sample_view.ex")
+    heex_path = Path.join(template_dir, "show.html.heex")
+    expected_heex_path = heex_path |> Path.expand() |> Path.relative_to_cwd()
+
+    File.write!(heex_path, """
+    <div></div>
+    <div></div>
+    <div></div>
+    <.form for={@form} phx-submit="save">
+      <input type="text" name="name" />
+    </.form>
+    """)
+
+    source_file =
+      """
+      # credo:disable-for-lines:10 Jump.CredoChecks.LiveViewFormCanBeRehydrated
+      defmodule SampleView do
+        embed_templates "../templates/*"
+      end
+      """
+      |> to_source_file(source_path)
+
+    issues =
+      source_file
+      |> LiveViewFormCanBeRehydrated.run()
+      |> valid_issues_for([source_file])
+
+    assert [
+             %Credo.Issue{
+               filename: ^expected_heex_path,
+               trigger: "<.form",
+               line_no: 4
+             }
+           ] = issues
+  end
+
+  defp valid_issues_for(issues, source_files) do
+    exec = Credo.Execution.build()
+
+    config_comment_map =
+      source_files
+      |> ConfigCommentFinder.run()
+      |> Map.new()
+
+    Filter.valid_issues(issues, %{exec | config_comment_map: config_comment_map})
   end
 end

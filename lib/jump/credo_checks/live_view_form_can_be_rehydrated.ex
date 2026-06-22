@@ -41,8 +41,10 @@ defmodule Jump.CredoChecks.LiveViewFormCanBeRehydrated do
     if String.ends_with?(filename, ".ex") and not exclude_path?(filename, params) do
       issue_meta = IssueMeta.for(source_file, params)
 
-      source_file
-      |> Credo.Code.prewalk(&traverse(&1, &2, issue_meta))
+      source_issues = Credo.Code.prewalk(source_file, &traverse(&1, &2, issue_meta))
+      template_issues = embedded_template_issues(source_file, issue_meta)
+
+      (source_issues ++ template_issues)
       |> Enum.uniq()
     else
       []
@@ -61,30 +63,40 @@ defmodule Jump.CredoChecks.LiveViewFormCanBeRehydrated do
     {node, issues ++ new_issues}
   end
 
+  defp traverse(node, issues, _issue_meta), do: {node, issues}
+
   # Check embedded templates
-  defp traverse({:embed_templates, _meta, template_patterns} = node, issues, issue_meta)
-       when is_list(template_patterns) do
-    source_file = Credo.IssueMeta.source_file(issue_meta)
+  defp embedded_template_issues(source_file, issue_meta) do
     source_dir = Path.dirname(source_file.filename)
 
-    # Find all .heex files in the templates directory
-    new_issues =
-      template_patterns
-      |> Enum.flat_map(fn template_pattern ->
-        source_dir
-        |> Path.join(template_pattern)
-        |> Path.wildcard()
-        |> Enum.reject(&exclude_path?(&1, issue_meta))
-        |> Enum.flat_map(fn heex_file ->
-          check_heex_file(heex_file, issue_meta)
-        end)
+    source_file
+    |> Credo.SourceFile.ast()
+    |> embedded_template_patterns()
+    |> Enum.flat_map(fn template_pattern ->
+      source_dir
+      |> Path.join(template_pattern)
+      |> Path.wildcard()
+      |> Enum.map(&normalize_path/1)
+      |> Enum.reject(&exclude_path?(&1, issue_meta))
+      |> Enum.flat_map(fn heex_file ->
+        check_heex_file(heex_file, issue_meta)
       end)
-      |> Enum.uniq()
-
-    {node, issues ++ new_issues}
+    end)
+    |> Enum.uniq()
   end
 
-  defp traverse(node, issues, _issue_meta), do: {node, issues}
+  defp embedded_template_patterns(ast) do
+    ast
+    |> Macro.prewalk([], fn
+      {:embed_templates, _meta, template_patterns} = node, patterns when is_list(template_patterns) ->
+        {node, template_patterns ++ patterns}
+
+      node, patterns ->
+        {node, patterns}
+    end)
+    |> elem(1)
+    |> Enum.reverse()
+  end
 
   # Check a HEEX string for forms without IDs
   defp check_heex_string_for_forms(heex_string, issue_meta, indentation, base_line) do
@@ -225,6 +237,7 @@ defmodule Jump.CredoChecks.LiveViewFormCanBeRehydrated do
   # Check a .heex file for forms without IDs
   # sobelow_skip ["Traversal.FileModule"]
   defp check_heex_file(heex_file, parent_issue_meta) do
+    heex_file = normalize_path(heex_file)
     content = File.read!(heex_file)
     params = IssueMeta.params(parent_issue_meta)
     issue_category = Params.category(params, __MODULE__)
@@ -455,5 +468,11 @@ defmodule Jump.CredoChecks.LiveViewFormCanBeRehydrated do
   defp exclude_path?(filename, params) when is_binary(filename) and (is_list(params) or is_map(params)) do
     excluded_path_substrings = params |> Params.get(:excluded, __MODULE__) |> List.wrap()
     String.contains?(filename, excluded_path_substrings)
+  end
+
+  defp normalize_path(path) do
+    path
+    |> Path.expand()
+    |> Path.relative_to_cwd()
   end
 end
